@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+__ECHARTS_SCRIPT__
+<style>
+  :root {
+    --up: #d63031;      /* A股习惯：红涨 */
+    --down: #009432;    /* 绿跌 */
+    --strategy: #d63031;
+    --bench: #5b7a99;
+    --text: #2d3436;
+    --muted: #8a94a6;
+    --line: #e8ecf2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #eef1f6; color: var(--text);
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 28px; }
+  header { padding: 6px 4px 14px; }
+  h1 { font-size: 19px; margin: 0; letter-spacing: .5px; }
+  h1 .accent { display: inline-block; width: 4px; height: 16px; background: var(--strategy);
+    border-radius: 2px; margin-right: 8px; vertical-align: -2px; }
+  .subtitle { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(172px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .card { background: #fff; border-radius: 10px; padding: 13px 16px; box-shadow: 0 1px 4px rgba(20,30,50,.06); }
+  .card-label { font-size: 12px; color: var(--muted); }
+  .card-value { font-size: 22px; font-weight: 700; margin: 5px 0 3px; font-variant-numeric: tabular-nums; }
+  .card-sub { font-size: 11px; color: #a0aab8; }
+  .panel { background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(20,30,50,.06);
+    padding: 14px 16px 10px; margin-bottom: 14px; }
+  .panel-title { font-size: 13px; font-weight: 600; color: #4a5568; margin: 2px 0 6px;
+    padding-left: 8px; border-left: 3px solid var(--strategy); }
+  .panel-title small { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  #main { width: 100%; height: 450px; }
+  #yearly, #heatmap { width: 100%; height: 288px; }
+  .row { display: grid; grid-template-columns: 46fr 54fr; gap: 14px; }
+  @media (max-width: 920px) { .row { grid-template-columns: 1fr; } }
+  footer { font-size: 11px; color: #95a5a6; line-height: 1.8; padding: 2px 6px; }
+  .chart-tip { font-size: 11px; color: var(--muted); margin: -2px 0 4px 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="accent"></span>__TITLE__</h1>
+    <div class="subtitle">__SUBTITLE__</div>
+  </header>
+
+  <div class="cards">__CARDS_HTML__</div>
+
+  <div class="panel">
+    <div class="panel-title">累计收益率曲线<small>鼠标悬停查看策略与 __BENCH_NAME__ 的当日收益率 · 滚轮/拖动缩放时间轴</small></div>
+    <div id="main"></div>
+  </div>
+
+  <div class="row">
+    <div class="panel">
+      <div class="panel-title">年度收益对比</div>
+      <div id="yearly"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">策略月度收益热力图</div>
+      <div id="heatmap"></div>
+      <div class="chart-tip">红=上涨，绿=下跌，空白=当月无数据</div>
+    </div>
+  </div>
+
+  <footer>__FOOTER__</footer>
+</div>
+
+<script>
+const D = __PAYLOAD_JSON__;
+
+const UP = "#d63031", DOWN = "#009432", TEXT = "#2d3436", MUTED = "#8a94a6";
+function fmtPct(v) {
+  if (v == null || isNaN(v)) return "—";
+  return (v > 0 ? "+" : "") + v.toFixed(2) + "%";
+}
+function signColor(v) { return v > 0 ? UP : (v < 0 ? DOWN : MUTED); }
+const WD = ["周一","周二","周三","周四","周五","周六","周日"];
+
+const baseTip = {
+  trigger: "axis",
+  backgroundColor: "#fff",
+  borderColor: "#e3e8ef",
+  padding: [8, 12],
+  textStyle: { color: TEXT, fontSize: 12 },
+  extraCssText: "box-shadow: 0 4px 16px rgba(20,30,50,.14); border-radius: 8px;"
+};
+
+/* ---------- 主图：累计收益率 + 回撤（联动悬停） ---------- */
+const mainChart = echarts.init(document.getElementById("main"));
+
+function tipRow(name, color, dayVal, cumVal) {
+  return `<div style="display:flex;align-items:center;margin:3px 0">
+    <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:6px"></span>
+    <span style="width:76px;color:#4a5568">${name}</span>
+    <span style="width:110px;text-align:right;font-weight:600;color:${signColor(dayVal)}">${fmtPct(dayVal)}</span>
+    <span style="width:110px;text-align:right;font-weight:600;color:${signColor(cumVal)}">${fmtPct(cumVal)}</span>
+  </div>`;
+}
+
+mainChart.setOption({
+  axisPointer: { link: [{ xAxisIndex: "all" }] },
+  tooltip: Object.assign({}, baseTip, {
+    axisPointer: { type: "line", lineStyle: { color: "#b2bec3", width: 1 } },
+    formatter: function (params) {
+      const i = params[0].dataIndex;
+      const ex = (D.sDay[i] != null && D.bDay[i] != null) ? D.sDay[i] - D.bDay[i] : null;
+      return `<div style="font-weight:700;margin-bottom:5px">${D.dates[i]} ${D.wd[i]}</div>
+        <div style="display:flex;margin:3px 0;color:${MUTED};font-size:11px">
+          <span style="width:83px"></span><span style="width:110px;text-align:right">当日收益</span>
+          <span style="width:110px;text-align:right">累计收益</span>
+        </div>`
+        + tipRow("策略", UP, D.sDay[i], D.sCum[i])
+        + tipRow(D.benchName, "#5b7a99", D.bDay[i], D.bCum[i])
+        + `<div style="display:flex;align-items:center;margin:4px 0 1px">
+             <span style="width:83px;color:#4a5568">当日超额</span>
+             <span style="width:110px;text-align:right;font-weight:600;color:${signColor(ex)}">${fmtPct(ex)}</span>
+             <span style="width:110px;text-align:right;color:${signColor(D.dd[i])}">回撤 ${fmtPct(D.dd[i])}</span>
+           </div>`;
+    }
+  }),
+  legend: {
+    data: [{ name: "策略", icon: "roundRect" }, { name: D.benchName, icon: "roundRect" }],
+    top: 2, textStyle: { fontSize: 12, color: "#4a5568" }
+  },
+  grid: [
+    { left: 62, right: 18, top: 30, height: "56%" },
+    { left: 62, right: 18, top: "73%", height: "13%" }
+  ],
+  xAxis: [
+    { type: "category", data: D.dates, gridIndex: 0, boundaryGap: false,
+      axisLine: { lineStyle: { color: "#c8d0da" } }, axisLabel: { color: MUTED, fontSize: 11 } },
+    { type: "category", data: D.dates, gridIndex: 1, boundaryGap: false,
+      axisLabel: { show: false }, axisTick: { show: false },
+      axisLine: { lineStyle: { color: "#c8d0da" } } }
+  ],
+  yAxis: [
+    { gridIndex: 0, axisLabel: { formatter: "{value}%", color: MUTED, fontSize: 11 },
+      splitLine: { lineStyle: { color: "#f1f3f7" } } },
+    { gridIndex: 1, axisLabel: { formatter: "{value}%", color: MUTED, fontSize: 10 },
+      splitLine: { show: false } }
+  ],
+  dataZoom: [
+    { type: "inside", xAxisIndex: [0, 1] },
+    { type: "slider", xAxisIndex: [0, 1], bottom: 4, height: 16,
+      borderColor: "#dfe6ee", fillerColor: "rgba(91,122,153,.12)",
+      handleStyle: { color: "#5b7a99" } }
+  ],
+  series: [
+    { name: "策略", type: "line", data: D.sCum, showSymbol: false, connectNulls: true,
+      lineStyle: { width: 1.7, color: UP }, itemStyle: { color: UP },
+      emphasis: { focus: "series" } },
+    { name: D.benchName, type: "line", data: D.bCum, showSymbol: false, connectNulls: true,
+      lineStyle: { width: 1.2, color: "#5b7a99" }, itemStyle: { color: "#5b7a99" },
+      emphasis: { focus: "series" } },
+    { name: "策略回撤", type: "line", xAxisIndex: 1, yAxisIndex: 1, data: D.dd,
+      showSymbol: false, connectNulls: true, lineStyle: { width: 1, color: UP, opacity: .7 },
+      areaStyle: { color: "rgba(214,48,49,.22)" }, silent: false }
+  ]
+});
+
+/* ---------- 年度收益对比 ---------- */
+const yearlyChart = echarts.init(document.getElementById("yearly"));
+yearlyChart.setOption({
+  tooltip: Object.assign({}, baseTip, {
+    axisPointer: { type: "shadow" },
+    formatter: function (params) {
+      return `<div style="font-weight:700;margin-bottom:4px">${params[0].axisValue} 年</div>`
+        + params.map(p =>
+            `<div style="display:flex;align-items:center;margin:2px 0">
+               <span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${p.color};margin-right:6px"></span>
+               <span style="width:72px;color:#4a5568">${p.seriesName}</span>
+               <span style="font-weight:600;color:${signColor(p.value)}">${fmtPct(p.value)}</span>
+             </div>`).join("");
+    }
+  }),
+  legend: { top: 0, textStyle: { fontSize: 12, color: "#4a5568" } },
+  grid: { left: 52, right: 14, top: 32, bottom: 26 },
+  xAxis: { type: "category", data: D.years,
+    axisLine: { lineStyle: { color: "#c8d0da" } }, axisLabel: { color: MUTED } },
+  yAxis: { axisLabel: { formatter: "{value}%", color: MUTED, fontSize: 11 },
+    splitLine: { lineStyle: { color: "#f1f3f7" } } },
+  series: [
+    { name: "策略", type: "bar", barMaxWidth: 22, data: D.sYearly,
+      itemStyle: { color: p => (p.value >= 0 ? UP : DOWN), borderRadius: 2 } },
+    { name: D.benchName, type: "bar", barMaxWidth: 22, data: D.bYearly,
+      itemStyle: { color: "#b7c6d4", borderRadius: 2 } }
+  ]
+});
+
+/* ---------- 月度收益热力图 ---------- */
+const hmChart = echarts.init(document.getElementById("heatmap"));
+const hmAbs = Math.min(10, Math.max(3, d3maxAbs(D.hmData)));
+function d3maxAbs(arr) {
+  let m = 0;
+  for (const t of arr) m = Math.max(m, Math.abs(t[2]));
+  return m;
+}
+hmChart.setOption({
+  tooltip: Object.assign({}, baseTip, {
+    position: "top",
+    formatter: p => `${p.value[1] >= 0 ? D.hmYears[p.value[1]] + " 年 " : ""}${p.name}　<b>${fmtPct(p.value[2])}</b>`
+  }),
+  grid: { left: 44, right: 12, top: 8, bottom: 42 },
+  xAxis: { type: "category", data: D.hmMonths, splitArea: { show: true, areaStyle: { color: ["#fafbfd", "#f3f6fa"] } },
+    axisLabel: { color: MUTED, fontSize: 10 }, axisLine: { show: false }, axisTick: { show: false } },
+  yAxis: { type: "category", data: D.hmYears.map(String), inverse: true,
+    axisLabel: { color: MUTED, fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false } },
+  visualMap: {
+    show: false, min: -hmAbs, max: hmAbs, calculable: false,
+    inRange: { color: ["#00b894", "#e8f7f1", "#ffffff", "#fdeeee", "#d63031"] }
+  },
+  series: [{
+    type: "heatmap", data: D.hmData,
+    label: { show: true, fontSize: 9, color: "#5a6472",
+      formatter: p => (p.value[2] == null ? "" : (p.value[2] > 0 ? "+" : "") + p.value[2].toFixed(1)) },
+    itemStyle: { borderColor: "#fff", borderWidth: 1, borderRadius: 2 }
+  }]
+});
+
+window.addEventListener("resize", () => {
+  mainChart.resize(); yearlyChart.resize(); hmChart.resize();
+});
+</script>
+</body>
+</html>
