@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -47,6 +48,7 @@ def main() -> int:
     p_fill.add_argument("--date", default=None, help="成交日 YYYYMMDD，默认今天")
     sub.add_parser("status", help="查看账户与净值状态")
     sub.add_parser("selfcheck", help="实盘与回测一致性自检")
+    sub.add_parser("notify-test", help="发送一条飞书测试消息（验证 webhook 配置）")
 
     args = parser.parse_args()
     live_root = ROOT / "live"
@@ -78,6 +80,16 @@ def main() -> int:
         return runner.cmd_status(live_root, cfg)
     if args.cmd == "selfcheck":
         return runner.cmd_selfcheck(live_root, cfg)
+    if args.cmd == "notify-test":
+        from live.notify import load_config, send_text
+
+        state = live_root / "state"
+        if load_config(state) is None:
+            print("未配置: 请把 live/feishu.example.json 复制为 live/state/feishu.json 并填入 webhook")
+            return 1
+        ok = send_text(state, f"【quad实盘】飞书推送测试成功 {datetime.now():%Y-%m-%d %H:%M}")
+        print("测试消息已发送，请到飞书群确认" if ok else "发送失败，请检查 webhook/secret 或网络")
+        return 0 if ok else 1
     return 1
 
 

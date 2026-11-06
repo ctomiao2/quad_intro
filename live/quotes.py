@@ -85,6 +85,8 @@ def fetch_spot_tencent(codes: list[str], index: bool = False) -> dict[str, dict]
                 "volume": volume,
                 "amount": int(float(parts[37]) * 10000),  # 万 -> 元
                 "prev_close": float(parts[4]),
+                # 行情时间戳 yyyymmddHHMMSS（parts[30]）：节假日兜底判断用
+                "time": parts[30].split(".")[0][:14] if len(parts) > 30 else "",
             }
         except (ValueError, IndexError):
             continue

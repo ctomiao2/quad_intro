@@ -32,6 +32,29 @@ python live.py bootstrap    # 复制数据快照到 live/data（只做一次，�
 python live.py selfcheck    # 一致性自检：参数/数据/复权/信号回放 vs 回测
 ```
 
+### 新电脑一键部署
+
+拉下代码后**双击 `live/deploy_schedule.bat`** 即可完成全部部署：自动找 Python、
+装依赖、初始化数据副本、跑一致性自检、注册 09:31/15:35 计划任务（幂等，可重复
+运行）。唯一前提：机器上已装 Python 3.10+（勾选 Add to PATH）。删除部署用
+`live/remove_schedule.bat`。
+
+### 飞书推送
+
+收盘任务每天推送「收盘日报」（持仓明细、现金、净值、基准，调仓日附当日指令回顾）；
+调仓日开盘任务额外即时推送「调仓指令」（目标持仓与整手申报单）。未配置时自动跳过，
+不影响主任务。
+
+配置方法：飞书群 → 设置 → 群机器人 → 添加「自定义机器人」→ 复制 Webhook 地址，
+然后：
+
+```bash
+cp live/feishu.example.json live/state/feishu.json   # 填入 webhook；若开启签名校验再填 secret
+python live.py notify-test                            # 发测试消息确认
+```
+
+`live/state/` 已被 .gitignore 忽略，webhook 不会进公开仓库。
+
 ## 日常流程（计划任务自动执行）
 
 | 时间 | 任务 | 动作 |

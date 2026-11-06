@@ -23,6 +23,7 @@ from backtest.engine import BacktestEngine
 from backtest.strategy import Context, MomentumRotationStrategy
 
 from . import quotes
+from .notify import send_text
 from .store import LiveStore
 
 # 与 run_backtest.py 的 argparse 默认值严格一致（cmd_selfcheck 会校验，改动需两边同步）
@@ -35,6 +36,13 @@ BACKTEST_DEFAULT_STRATEGY = {
 }
 
 INDEX_CODES = ["000001.SH", "399001.SZ", "399006.SZ"]
+_WD = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+
+def _spot_is_today(spot: dict, today_str: str) -> bool:
+    """腾讯行情时间戳是否含今日（日历不可用时兜底：节假日行情是陈旧的，不得入库）。"""
+    known = [q.get("time", "")[:8] for q in spot.values() if len(q.get("time", "")) >= 8]
+    return not known or any(t == today_str for t in known)
 
 
 def load_config(live_root: Path) -> dict:
@@ -137,6 +145,9 @@ def cmd_open(live_root: Path, cfg: dict) -> int:
 
     # 1) 抓开盘行情（腾讯批量 -> 东财单只兜底）
     spot = quotes.fetch_spot_tencent(feed.universe + INDEX_CODES)
+    if not _spot_is_today(spot, today_d.strftime("%Y%m%d")):
+        log(f"{today_d:%Y-%m-%d} 行情时间戳非当日（节假日/接口异常），开盘任务跳过")
+        return 0
     etf_open = quotes.fetch_etf_open_with_fallback(feed.universe, spot)
     if cfg.get("benchmark") not in spot:
         log(f"警告: 基准 {cfg.get('benchmark')} 实时行情缺失")
@@ -213,6 +224,26 @@ def cmd_open(live_root: Path, cfg: dict) -> int:
         json.dumps({"date": str(today_d), "targets": targets, "orders": orders},
                    ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+    # 5) 飞书推送调仓指令（未配置 webhook 时自动跳过，不影响任务）
+    if orders or not targets:
+        msg = [f"【quad实盘 · 调仓指令】{today_d:%Y-%m-%d} {_WD[today_d.weekday()]}"]
+        if targets:
+            msg.append("目标持仓: " + " | ".join(
+                f"{c} {feed.names.get(c, '')} {w * 100:.0f}%" for c, w in targets.items()))
+        else:
+            msg.append("目标持仓: 空仓观望（全部标的动量分数不达标）")
+        if orders:
+            msg.append("交易指令（按开盘价整手申报）:")
+            for i, o in enumerate(orders, 1):
+                msg.append(f"{i}. {o['side']} {o['code']} {o['name']} {o['shares']}股 "
+                           f"@{o['ref_price']:.3f} 约{o['value']:,.0f}元")
+        else:
+            msg.append("目标与当前持仓一致，无需交易")
+        cur = "、".join(f"{c}×{p.shares}股" for c, p in pf.positions.items()) or "空仓"
+        msg.append(f"当前实盘持仓: {cur}")
+        msg.append("成交后登记: python live.py fill --code <代码> --side 买|卖 --shares <股数> --price <成交价>")
+        send_text(state_dir, "\n".join(msg))
     return 0
 
 
@@ -235,6 +266,9 @@ def cmd_close(live_root: Path, cfg: dict, force: bool = False) -> int:
 
     # 1) 抓当日定稿行情：东财日K(官方定稿) -> 腾讯批量兜底 -> 新浪兜底
     spot = quotes.fetch_spot_tencent(feed.universe + INDEX_CODES)
+    if not _spot_is_today(spot, today_d.strftime("%Y%m%d")):
+        log(f"{today_d:%Y-%m-%d} 行情时间戳非当日（节假日/接口异常），收盘任务跳过")
+        return 0
     today_str = today_d.strftime("%Y%m%d")
 
     def row_for(code: str, prev_close: float | None) -> dict | None:
@@ -323,6 +357,36 @@ def cmd_close(live_root: Path, cfg: dict, force: bool = False) -> int:
     holds = ", ".join(f"{c}×{p.shares}" for c, p in pf.positions.items()) or "空仓"
     log(f"实盘净值: 总资产 {total:,.0f} 元 (nav={total / base:.4f}), 持仓: {holds}, "
         f"基准收盘 {bench_close:.2f}")
+
+    # 3) 飞书推送收盘日报（调仓日带指令回顾，非调仓日播报持仓）
+    rb_path = state_dir / "rebalance_state.json"
+    rebalanced_today = False
+    if rb_path.exists():
+        rebalanced_today = json.loads(
+            rb_path.read_text(encoding="utf-8"))["last_rebalance_date"] == str(today_d)
+    msg = [f"【quad实盘 · 收盘日报】{today_d:%Y-%m-%d} {_WD[today_d.weekday()]}"
+           + ("（调仓日）" if rebalanced_today else "（非调仓日）")]
+    if pf.positions:
+        msg.append("持仓:")
+        for c, p in pf.positions.items():
+            px = float(closes_today[c])
+            val = p.shares * px
+            pnl = val / p.cost - 1 if p.cost > 0 else 0.0
+            msg.append(f"· {c} {feed2.names.get(c, '')} {p.shares}股 "
+                       f"市值{val:,.0f}元 浮动盈亏{pnl * 100:+.2f}%")
+    else:
+        msg.append("当前空仓")
+    msg.append(f"现金 {pf.cash:,.0f} | 总资产 {total:,.0f} (nav {total / base:.4f})")
+    msg.append(f"基准 {cfg.get('benchmark')} 收盘 {bench_close:.2f}")
+    orders_path = live_root / "logs" / f"orders_{today_d:%Y%m%d}.json"
+    if rebalanced_today and orders_path.exists():
+        od = json.loads(orders_path.read_text(encoding="utf-8"))
+        if od.get("orders"):
+            msg.append("今日指令: " + "; ".join(
+                f"{o['side']}{o['code']} {o['shares']}股@{o['ref_price']:.3f}" for o in od["orders"]))
+        else:
+            msg.append("今日为调仓日，无需交易")
+    send_text(state_dir, "\n".join(msg))
     return 0
 
 
