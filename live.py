@@ -56,13 +56,28 @@ def main() -> int:
         from live.store import LiveStore
 
         LiveStore(live_root).bootstrap(ROOT)
-        # 播种交易日历缓存（若 quad-live 有现成缓存）
-        seed = Path("D:/Learn/quad-live/cache/trade_dates.json")
+        # 播种交易日历：仓库种子(覆盖至2026-12-31)与 quad-live 缓存取更新者
+        import json as _json
+
         state = live_root / "state"
-        if seed.exists() and not (state / "trade_calendar.json").exists():
-            state.mkdir(parents=True, exist_ok=True)
-            (state / "trade_calendar.json").write_text(seed.read_text(encoding="utf-8"), encoding="utf-8")
-            print("[bootstrap] 已播种交易日历缓存（来自 quad-live）")
+        state.mkdir(parents=True, exist_ok=True)
+        if not (state / "trade_calendar.json").exists():
+            candidates = [live_root / "trade_calendar_seed.json",
+                          Path("D:/Learn/quad-live/cache/trade_dates.json")]
+            best = None
+            for p in candidates:
+                if p.exists():
+                    try:
+                        d = _json.loads(p.read_text(encoding="utf-8"))["dates"]
+                        if best is None or max(d) > max(best[1]):
+                            best = (p, d)
+                    except Exception:  # noqa: BLE001
+                        continue
+            if best:
+                (state / "trade_calendar.json").write_text(
+                    _json.dumps({"fetched_at": str(__import__("datetime").date.today()),
+                                 "dates": best[1]}, ensure_ascii=False), encoding="utf-8")
+                print(f"[bootstrap] 已播种交易日历({len(best[1])} 天, 覆盖至 {max(best[1])})")
         print("[bootstrap] 完成。下一步: python live.py selfcheck && python live.py open")
         return 0
 

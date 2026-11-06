@@ -266,38 +266,85 @@ def fetch_etf_open_with_fallback(
 
 
 # ---------------- 交易日历 ----------------
+# 来源与优先级（参考 quad-live TradingCalendar 的保守策略）：
+#   运行缓存(state/trade_calendar.json) -> akshare 刷新 -> quad-live 缓存(本机开发环境)
+#   -> 仓库种子(live/trade_calendar_seed.json, 覆盖至 2026-12-31)。
+# 全部失效时按工作日判断，另由「行情时间戳非当日则跳过」兜底防节假日污染。
 
-def load_trade_dates(state_dir: Path) -> set[str] | None:
-    """交易日历（YYYYMMDD 集合）。本地缓存；缓存不覆盖今天且 akshare 可用时刷新。
+SEED_FILE = Path(__file__).parent / "trade_calendar_seed.json"
+QUAD_LIVE_CACHE = Path("D:/Learn/quad-live/cache/trade_dates.json")
 
-    参考 quad-live TradingCalendar：刷新失败不阻断，返回缓存或 None（按工作日保守判断）。
-    """
-    state_dir.mkdir(parents=True, exist_ok=True)
-    cache = state_dir / "trade_calendar.json"
-    today = date.today().strftime("%Y%m%d")
-    obj = None
-    if cache.exists():
-        try:
-            obj = json.loads(cache.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            obj = None
-    if obj and max(obj["dates"]) >= today:
-        return set(obj["dates"])
 
+def _read_calendar_file(path: Path) -> set[str] | None:
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+        dates = obj.get("dates") or []
+        return set(dates) if dates else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _save_cache(cache: Path, dates: set[str]) -> None:
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(
+        json.dumps(
+            {"fetched_at": str(date.today()), "dates": sorted(dates)},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _refresh_calendar(cache: Path) -> set[str] | None:
+    """日历缺失/过期时尝试刷新：akshare -> 本机 quad-live 缓存。"""
     try:
         import akshare as ak
 
         df = ak.tool_trade_date_hist_sina()
         col = "trade_date" if "trade_date" in df.columns else df.columns[0]
-        dates = sorted(str(pd.Timestamp(v).strftime("%Y%m%d")) for v in df[col])
-        cache.write_text(
-            json.dumps({"fetched_at": str(date.today()), "dates": dates}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        return set(dates)
-    except Exception as e:  # noqa: BLE001
-        print(f"[quotes] 交易日历刷新失败({e})，使用缓存/工作日判断")
-        return set(obj["dates"]) if obj else None
+        dates = {pd.Timestamp(v).strftime("%Y%m%d") for v in df[col]}
+        if dates:
+            _save_cache(cache, dates)
+            print(f"[quotes] 交易日历已从 akshare 刷新({len(dates)} 天)")
+            return dates
+    except Exception:  # noqa: BLE001 —— akshare 不可用属预期，继续下一层
+        pass
+    if QUAD_LIVE_CACHE.exists():
+        dates = _read_calendar_file(QUAD_LIVE_CACHE)
+        if dates:
+            _save_cache(cache, dates)
+            print(f"[quotes] 交易日历已从 quad-live 缓存刷新({len(dates)} 天)")
+            return dates
+    return None
+
+
+def load_trade_dates(state_dir: Path) -> set[str] | None:
+    """交易日历（YYYYMMDD 集合），永不抛异常；返回 None 时调用方按工作日保守判断。"""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cache = state_dir / "trade_calendar.json"
+    today = date.today().strftime("%Y%m%d")
+    cached = _read_calendar_file(cache) if cache.exists() else None
+    if cached and max(cached) >= today:
+        return cached
+    if cached is None:
+        refreshed = _refresh_calendar(cache)
+        if refreshed:
+            return refreshed
+    else:
+        print(f"[quotes] 交易日历缓存已过期(最大 {max(cached)})，尝试刷新")
+        refreshed = _refresh_calendar(cache)
+        if refreshed:
+            return refreshed
+        return cached  # 过期日历仍比没有强，节假日由行情时间戳校验兜底
+    seed = _read_calendar_file(SEED_FILE) if SEED_FILE.exists() else None
+    if seed:
+        if max(seed) >= today:
+            _save_cache(cache, seed)
+            print(f"[quotes] 交易日历使用仓库种子({len(seed)} 天, 覆盖至 {max(seed)})")
+        else:
+            print(f"[quotes] 仓库种子已过期(覆盖至 {max(seed)})，请更新种子或安装 akshare")
+        return seed
+    return None
 
 
 def is_trade_date(d: date, state_dir: Path) -> bool:
