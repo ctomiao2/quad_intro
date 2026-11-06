@@ -1,4 +1,103 @@
-# Quad 量化教程数据集
+# quad_intro · ETF 动量轮动（回测 + 看板 + 实盘）
+
+基于 30 只 ETF 池的**周频动量轮动**策略全家桶：事件驱动回测框架、HTML 回测看板、
+可一键部署的实盘自动化（免费行情源 + 飞书推送）。策略每个交易日开盘用截至昨收的
+前复权数据打分（25 日风险调整动量），每周第一个交易日调仓持有分数最高的 2 只（等权，
+初始资金 10 万，按开盘价整手成交）。
+
+> 数据与代码仅用于教学与研究，不构成投资建议。
+
+## 一、回测
+
+```bash
+pip install -r requirements.txt
+python run_backtest.py                       # 默认 2021-01-01 起，周频、持仓 2 只
+python run_backtest.py --lookback 60 --top-n 3 --freq M   # 自定义参数
+```
+
+输出到 `results/`：`nav.csv`（每日净值）、`trades.csv`（成交明细）、
+`equity_curve.png`（净值曲线）、`dashboard.html`（自包含 HTML 看板，双击可开）。
+
+回测框架在 `backtest/`，分层清晰、可替换策略：
+
+| 模块 | 职责 |
+| --- | --- |
+| `data.py` | 数据加载清洗（前复权/拆分事件/脏行/交易日历） |
+| `broker.py` | 账户撮合（原始价、整手、佣金、拆分调股） |
+| `strategy.py` | 策略基类 + 动量轮动策略 |
+| `engine.py` | 事件驱动引擎（开盘撮合、收盘估值） |
+| `metrics.py` / `report.py` | 绩效指标与报告输出 |
+| `dashboard.py` | HTML 看板生成（策略 vs 大盘、悬停当日收益） |
+
+## 二、实盘自动化
+
+实盘**复用回测的同一份策略与撮合代码**（import 而非复制），配合一致性自检
+（`python live.py selfcheck`：参数 / 复权公式 / 信号回放逐项对比回测），保证实盘与
+回测跑的策略完全一致。实盘数据、配置、持仓状态全部隔离在 `live/` 目录，回测互不干扰。
+
+- **开盘任务**（交易日 09:31）：抓全池开盘价（腾讯批量 + 东财兜底）→ 打分 →
+  调仓日生成整手交易指令
+- **收盘任务**（交易日 15:35）：官方定稿日线入库（东财 → 腾讯 → 新浪三层兜底）→ 记实盘净值
+- 行情源全部免费免 token；节假日双重防护（交易日历 + 行情时间戳校验）
+
+### 新电脑一键部署
+
+装好 Python 3.10+（勾选 Add to PATH），拉下代码后**双击 `live/deploy_schedule.bat`**：
+自动找 Python → 装依赖 → 初始化实盘数据副本 → 一致性自检 → 注册计划任务
+（周一~五 09:31 / 15:35）。幂等可重复运行；卸载用 `live/remove_schedule.bat`。
+计划任务只在开机时触发，漏跑后按 `live/README.md` 的故障恢复一节补跑即可。
+
+### 日常流程
+
+1. 调仓日 09:31 收到飞书指令 → 券商端按指令申报
+2. 成交后登记实际回报（手续费按回测口径自动扣）：
+   `python live.py fill --code 512800.SH --side 买 --shares 57500 --price 0.869`
+3. `python live.py status` 随时查看持仓/净值/与回测同期对比
+
+## 三、飞书推送配置
+
+推送内容：**调仓日 09:31** 即时推送调仓指令（目标持仓、每笔股数/参考价/金额）；
+**每个交易日 15:35** 推送收盘日报（当日是否调仓、持仓市值与浮动盈亏、现金、净值、
+基准收盘；非调仓日仅播报持仓）。推送失败只记日志，不影响行情入库等主任务。
+
+配置步骤（使用飞书群自定义机器人，免费）：
+
+1. 打开一个飞书群 → **设置 → 群机器人 → 添加机器人 → 自定义机器人**；
+   复制 **Webhook 地址**（形如 `https://open.feishu.cn/open-apis/bot/v2/hook/xxxx`）；
+   若创建时开启了**签名校验**，一并复制 **Secret**（不开则不需要）
+2. 复制模板并填入：
+   ```bash
+   copy live\feishu.example.json live\state\feishu.json
+   # 编辑 live/state/feishu.json:
+   # { "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/你的地址",
+   #   "secret": "签名密钥, 未开启留空" }
+   ```
+3. 验证：`python live.py notify-test`，飞书群收到测试消息即成功
+
+> **隐私提醒**：Webhook 地址与 Secret 等同于密码，任何拿到的人都能向你的群发消息。
+> `live/state/` 已被 `.gitignore` 忽略，`feishu.json` 不会被提交；请勿将其提交到
+> 任何仓库或粘贴到公开场合。若怀疑泄露，在飞书机器人设置里删除重建即可作废旧地址。
+
+## 目录结构
+
+```
+quad_intro/
+  backtest/          回测框架（data/broker/strategy/engine/metrics/report/dashboard）
+  live/              实盘系统（quotes/store/runner/notify + 一键部署脚本，详见 live/README.md）
+  live.py            实盘 CLI 入口（open/close/fill/status/backfill/selfcheck/notify-test）
+  run_backtest.py    回测入口
+  etf_daily/ 等      数据快照（字段与坑点见附录）
+  results/           回测输出（含 dashboard.html 看板）
+```
+
+## 已知简化（与实盘的差异来源）
+
+- 以开盘价成交、无滑点与涨跌停约束（实盘人工申报会有偏差，用 `status` 观察漂移）
+- 佣金按单边万 1 计（ETF 免印花税）；现金分红未复权，长周期收益略偏低
+
+---
+
+# 附录：数据集说明（quad 导出快照）
 
 本目录是 [D:/Learn/quad](file:///D:/Learn/quad) 当前 ETF 池 + 三大指数历史行情的**只读快照**，供教学/练手使用。
 
