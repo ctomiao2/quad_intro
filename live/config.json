@@ -1,0 +1,19 @@
+{
+  "strategy": {
+    "lookback": 25,
+    "top_n": 2,
+    "min_score": 0.0,
+    "mode": "sharpe",
+    "freq": "W"
+  },
+  "account": {
+    "cash": 100000.0,
+    "commission_rate": 0.0001
+  },
+  "trading": {
+    "lot": 100,
+    "min_order_value": 500.0
+  },
+  "benchmark": "000001.SH",
+  "source": "eastmoney(akshare)"
+}

@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+# 实盘个人数据：行情副本可重建，state/logs 含持仓与成交隐私，不入公开仓库
+live/data/
+live/state/
+live/logs/

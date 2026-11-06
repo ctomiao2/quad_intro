@@ -87,6 +87,17 @@ class MomentumRotationStrategy(BaseStrategy):
             return (date.year, date.month)
         return date  # D：每个交易日都是新周期
 
+    def is_rebalance_day(self, date: pd.Timestamp, last_rebalance_date: pd.Timestamp | None) -> bool:
+        """date 相对「上一次调仓日」是否开启新调仓周期。
+
+        回测引擎靠 on_date 的内部状态（连续交易日循环）隐式完成同一判断；
+        实盘每日新建进程，需要把上次调仓日持久化后显式调用本方法，
+        两边共用同一段周期规则，保证周频语义一致。
+        """
+        if last_rebalance_date is None:
+            return True
+        return self._period_key(date) != self._period_key(last_rebalance_date)
+
     def on_date(self, ctx: Context) -> dict[str, float] | None:
         key = self._period_key(ctx.date)
         if self._last_period is not None and key == self._last_period:
